@@ -143,7 +143,7 @@ class TextVQADataset(Dataset):
 
 def collate_fn(batch: List[Dict]) -> Dict[str, torch.Tensor]:
     """
-    Custom collate function to handle batching of TextVQA data.
+    Custom collate function to handle batching of TextVQA data with variable-length sequences.
     
     Args:
         batch: List of examples from TextVQADataset
@@ -151,13 +151,36 @@ def collate_fn(batch: List[Dict]) -> Dict[str, torch.Tensor]:
     Returns:
         Batched dictionary
     """
-    # Separate tensor data from metadata
-    input_ids = torch.stack([item["input_ids"] for item in batch])
-    attention_mask = torch.stack([item["attention_mask"] for item in batch])
+    # Find max length in batch
+    max_len = max(item["input_ids"].size(0) for item in batch)
+    
+    # Pad input_ids and attention_mask to max_len
+    input_ids_list = []
+    attention_mask_list = []
+    
+    for item in batch:
+        input_ids = item["input_ids"]
+        attention_mask = item["attention_mask"]
+        
+        # Calculate padding needed
+        pad_len = max_len - input_ids.size(0)
+        
+        if pad_len > 0:
+            # Pad with zeros (pad token id is usually 0)
+            input_ids = torch.cat([input_ids, torch.zeros(pad_len, dtype=input_ids.dtype)])
+            attention_mask = torch.cat([attention_mask, torch.zeros(pad_len, dtype=attention_mask.dtype)])
+        
+        input_ids_list.append(input_ids)
+        attention_mask_list.append(attention_mask)
+    
+    # Stack the padded tensors
+    input_ids = torch.stack(input_ids_list)
+    attention_mask = torch.stack(attention_mask_list)
     
     # Handle pixel values (may be None for some examples)
     pixel_values = None
     if batch[0]["pixel_values"] is not None:
+        # Pixel values should all have the same shape
         pixel_values = torch.stack([item["pixel_values"] for item in batch])
     
     # Handle labels
