@@ -67,10 +67,15 @@ def evaluate_zero_shot(
             input_ids = batch["input_ids"].to(device)
             attention_mask = batch["attention_mask"].to(device)
             
-            # Handle pixel values - they might be in different formats
+            # Handle pixel values - can be tensor or list of tensors (for variable sizes)
             pixel_values = batch.get("pixel_values")
             if pixel_values is not None:
-                pixel_values = pixel_values.to(device)
+                if isinstance(pixel_values, list):
+                    # List of tensors - move each to device
+                    pixel_values = [pv.to(device) for pv in pixel_values]
+                else:
+                    # Single tensor - move to device
+                    pixel_values = pixel_values.to(device)
             
             # Generate predictions
             try:
