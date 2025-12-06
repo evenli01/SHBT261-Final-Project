@@ -92,9 +92,13 @@ class QwenVLModel:
             self.config.model_name,
             trust_remote_code=self.config.trust_remote_code,
         )
-        # Ensure pad token exists
-        if self.processor.tokenizer.pad_token is None:
-            self.processor.tokenizer.pad_token = self.processor.tokenizer.eos_token
+        tok = self.processor.tokenizer
+
+        if tok.pad_token is None:
+            tok.pad_token = tok.eos_token
+        
+        tok.padding_side = "left"
+       
 
     # -----------------------------------------------------------
     # LoRA + Freezing
