@@ -1,17 +1,19 @@
 """
-Zero-shot evaluation of Qwen2.5-VL-3B on TextVQA (local dataset).
+Zero-shot evaluation of Qwen2.5-VL-3B on the TextVQA dataset (local).
 """
+
+import os
+import sys
+import json
+import argparse
+from pathlib import Path
+from datetime import datetime
 
 import torch
 from torch.utils.data import DataLoader
 from tqdm import tqdm
-import json
-import os
-from pathlib import Path
-import argparse
-from datetime import datetime
-import sys
 
+# Add project root to path
 sys.path.append(str(Path(__file__).parent.parent))
 
 from models.qwen_model import QwenVLModel
@@ -33,6 +35,21 @@ def evaluate_zero_shot(
     save_predictions: bool = True,
     output_file: str = None,
 ):
+    """
+    Run zero-shot evaluation on a TextVQA split.
+
+    Args:
+        model_wrapper: QwenVLModel instance
+        dataloader: DataLoader that yields model-ready batches
+        metrics_calc: TextVQAMetrics instance
+        device: device string ("cuda" or "cpu")
+        max_samples: limit number of evaluated samples (for debugging)
+        save_predictions: whether to save predictions to disk
+        output_file: path to JSON output
+
+    Returns:
+        dict with metrics, num_samples, timestamp, and optionally predictions
+    """
     model = model_wrapper.get_model()
     processor = model_wrapper.get_processor()
     model.eval()
@@ -45,6 +62,7 @@ def evaluate_zero_shot(
         if max_samples is not None and n >= max_samples:
             break
 
+        # Move tensors to device
         input_ids = batch["input_ids"].to(device)
         attention_mask = batch["attention_mask"].to(device)
         pixel_values = batch["pixel_values"].to(device)
@@ -58,9 +76,10 @@ def evaluate_zero_shot(
                 attention_mask=attention_mask,
             )
 
+        # Decode predictions
         for i in range(outputs.shape[0]):
-            # decode only generated tokens beyond the input length
-            gen_ids = outputs[i][len(input_ids[i]) :]
+            # Trim off the prompt tokens: keep only generated continuation
+            gen_ids = outputs[i][len(input_ids[i]):]
             pred = processor.tokenizer.decode(
                 gen_ids, skip_special_tokens=True
             ).strip()
@@ -89,6 +108,7 @@ def evaluate_zero_shot(
         "timestamp": datetime.now().isoformat(),
     }
 
+    # Optionally save predictions + metadata
     if save_predictions and output_file is not None:
         out_dir = Path(output_file).parent
         out_dir.mkdir(parents=True, exist_ok=True)
@@ -123,51 +143,60 @@ def evaluate_zero_shot(
 # ============================================================
 
 def main():
-    parser = argparse.ArgumentParser(description="Zero-shot TextVQA eval")
+    parser = argparse.ArgumentParser(description="Zero-shot TextVQA eval with Qwen2.5-VL")
     parser.add_argument(
         "--model_name",
         type=str,
         default="Qwen/Qwen2.5-VL-3B-Instruct",
+        help="HF model name or local path",
     )
     parser.add_argument(
         "--split",
         type=str,
         default="validation",
         choices=["validation", "test"],
+        help="Dataset split to evaluate on",
     )
     parser.add_argument(
         "--batch_size",
         type=int,
         default=4,
+        help="Eval batch size",
     )
     parser.add_argument(
         "--max_samples",
         type=int,
         default=None,
+        help="Maximum number of samples to evaluate (for debugging)",
     )
     parser.add_argument(
         "--output_dir",
         type=str,
         default="./results/zero_shot",
+        help="Directory to store evaluation results",
     )
     parser.add_argument(
         "--device",
         type=str,
         default="cuda" if torch.cuda.is_available() else "cpu",
+        help="Device to run on",
     )
     parser.add_argument(
         "--data_dir",
         type=str,
         default="./textvqa_data",
+        help="Root directory containing local TextVQA HF dataset",
     )
     parser.add_argument(
         "--use_llm_judge",
         action="store_true",
+        help="Whether to use LLM-as-a-judge metric",
     )
     parser.add_argument(
         "--llm_api_key",
         type=str,
         default=None,
+        help="API key for LLM judge (if enabled)",
     )
 
     args = parser.parse_args()
@@ -175,22 +204,22 @@ def main():
     print("=" * 70)
     print("Zero-Shot Evaluation - Qwen2.5-VL-3B on TextVQA")
     print("=" * 70)
-    print(f"Model: {args.model_name}")
-    print(f"Split: {args.split}")
+    print(f"Model:      {args.model_name}")
+    print(f"Split:      {args.split}")
     print(f"Batch size: {args.batch_size}")
-    print(f"Device: {args.device}")
-    print(f"Data dir: {args.data_dir}")
+    print(f"Device:     {args.device}")
+    print(f"Data dir:   {args.data_dir}")
     print("=" * 70)
 
-    # Model config
+    # ------------------ Load model ------------------
     config = ModelConfig()
     config.model_name = args.model_name
     config.use_lora = False
-    config.device_map = args.device
+    config.device_map = args.device  # "cuda" or "cpu"
 
     model_wrapper = QwenVLModel(config)
 
-    # Load dataset locally
+    # ------------------ Load data -------------------
     dataset = load_textvqa_data(
         data_dir=args.data_dir,
         split=args.split,
@@ -199,28 +228,36 @@ def main():
 
     eval_dataset = TextVQADataset(
         dataset=dataset,
-        processor=model_wrapper.get_processor(),
         split=args.split,
     )
+
+    # collate_fn needs access to the processor
+    processor = model_wrapper.get_processor()
+
+    from functools import partial
+    eval_collate = partial(collate_fn, processor=processor)
 
     eval_loader = DataLoader(
         eval_dataset,
         batch_size=args.batch_size,
         shuffle=False,
-        collate_fn=collate_fn,
+        collate_fn=eval_collate,
     )
 
+    # ------------------ Metrics ---------------------
     metrics_calc = TextVQAMetrics(
         use_llm_judge=args.use_llm_judge,
         llm_api_key=args.llm_api_key,
     )
 
     ts = datetime.now().strftime("%Y%m%d_%H%M%S")
+    os.makedirs(args.output_dir, exist_ok=True)
     out_file = os.path.join(
         args.output_dir,
         f"zero_shot_{args.split}_{ts}.json",
     )
 
+    # ------------------ Run eval --------------------
     results = evaluate_zero_shot(
         model_wrapper=model_wrapper,
         dataloader=eval_loader,

@@ -1,9 +1,10 @@
 """
-Qwen2.5-VL model wrapper with LoRA support.
+Qwen2.5-VL model wrapper with optional LoRA support.
+Uses the official Qwen2_5_VLForConditionalGeneration loader.
 """
 
 import torch
-from transformers import AutoModelForVision2Seq, AutoProcessor
+from transformers import Qwen2_5_VLForConditionalGeneration, AutoProcessor
 from peft import get_peft_model, prepare_model_for_kbit_training
 from typing import Optional
 import logging
@@ -23,7 +24,7 @@ class QwenVLModel:
         self,
         config: ModelConfig,
         load_in_8bit: bool = False,
-        load_in_4bit: bool = False
+        load_in_4bit: bool = False,
     ):
         """
         Initialize Qwen2.5-VL model with optional LoRA.
@@ -58,15 +59,16 @@ class QwenVLModel:
                 load_in_4bit=self.load_in_4bit,
                 bnb_4bit_compute_dtype=torch.bfloat16 if self.config.bf16 else torch.float16,
                 bnb_4bit_use_double_quant=True,
-                bnb_4bit_quant_type="nf4"
+                bnb_4bit_quant_type="nf4",
             )
 
-        self.model = AutoModelForVision2Seq.from_pretrained(
+        # 🔹 Official loader class for Qwen2.5-VL
+        self.model = Qwen2_5_VLForConditionalGeneration.from_pretrained(
             self.config.model_name,
             torch_dtype=torch.bfloat16 if self.config.bf16 else torch.float16,
             device_map=self.config.device_map,
             trust_remote_code=self.config.trust_remote_code,
-            quantization_config=quantization_config
+            quantization_config=quantization_config,
         )
 
         if self.config.freeze_vision_encoder:
@@ -88,7 +90,7 @@ class QwenVLModel:
         logger.info("Loading processor")
         self.processor = AutoProcessor.from_pretrained(
             self.config.model_name,
-            trust_remote_code=self.config.trust_remote_code
+            trust_remote_code=self.config.trust_remote_code,
         )
         # Ensure pad token exists
         if self.processor.tokenizer.pad_token is None:
@@ -128,14 +130,14 @@ class QwenVLModel:
         input_ids: torch.Tensor,
         attention_mask: torch.Tensor,
         max_new_tokens: Optional[int] = None,
-        **kwargs
+        **kwargs,
     ) -> torch.Tensor:
         """
         Generate text given image + text inputs.
 
         Args:
-            pixel_values: [B, num_tokens, dim] visual tokens
-            image_grid_thw: [B, 3] per-image grid (T, H, W)
+            pixel_values: visual tokens (as produced by AutoProcessor)
+            image_grid_thw: [B, 3] THW grid (as produced by AutoProcessor)
             input_ids: [B, L]
             attention_mask: [B, L]
             max_new_tokens: max generated tokens
@@ -158,7 +160,7 @@ class QwenVLModel:
                 top_p=self.config.top_p if self.config.do_sample else None,
                 pad_token_id=self.processor.tokenizer.pad_token_id,
                 eos_token_id=self.processor.tokenizer.eos_token_id,
-                **kwargs
+                **kwargs,
             )
 
         return outputs
@@ -176,6 +178,7 @@ class QwenVLModel:
     def load_adapter(self, adapter_path: str):
         """Load a LoRA adapter into current base model."""
         from peft import PeftModel
+
         logger.info(f"Loading LoRA adapter from {adapter_path}")
         self.model = PeftModel.from_pretrained(self.model, adapter_path)
         logger.info("Adapter loaded successfully")
@@ -203,7 +206,7 @@ def load_model_for_inference(
     model_path: str,
     config: Optional[ModelConfig] = None,
     use_lora: bool = False,
-    device: str = "cuda"
+    device: str = "cuda",
 ) -> QwenVLModel:
     """
     Convenience loader for inference.

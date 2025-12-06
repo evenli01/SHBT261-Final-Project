@@ -1,15 +1,19 @@
 """
 Data preprocessing utilities for TextVQA + Qwen2.5-VL.
+
+Design:
+- Dataset only returns raw image, question, answers, IDs.
+- collate_fn uses Qwen's AutoProcessor with chat template to build
+  model-ready tensors: input_ids, attention_mask, pixel_values, image_grid_thw.
 """
 
 import torch
 from torch.utils.data import Dataset, DataLoader
 from datasets import load_from_disk
-from transformers import AutoProcessor
 from PIL import Image
-import numpy as np
 from pathlib import Path
-from typing import Dict, List, Optional, Tuple
+from typing import Dict, List, Optional
+import numpy as np
 
 
 # ============================================================
@@ -24,7 +28,7 @@ def load_textvqa_data(
     """
     Load TextVQA dataset from local disk (HuggingFace arrow).
 
-    Folder layout (already in your pod):
+    Expected layout:
         data_dir/
             train/data/...
             validation/data/...
@@ -54,92 +58,36 @@ def load_textvqa_data(
 
 class TextVQADataset(Dataset):
     """
-    TextVQA dataset adapted for Qwen2.5-VL.
+    TextVQA dataset for Qwen2.5-VL.
+
+    This dataset:
+    - DOES NOT tokenize
+    - Returns only raw PIL image, question, answers, IDs
     """
 
-    def __init__(
-        self,
-        dataset,
-        processor,
-        max_length: int = 512,
-        split: str = "train"
-    ):
+    def __init__(self, dataset, split: str = "validation"):
         self.dataset = dataset
-        self.processor = processor
-        self.max_length = max_length
         self.split = split
 
     def __len__(self):
         return len(self.dataset)
 
     def __getitem__(self, idx):
-        example = self.dataset[idx]
+        ex = self.dataset[idx]
 
-        # Image: either already PIL or file path
-        image = example["image"]
+        image = ex["image"]
         if not isinstance(image, Image.Image):
             image = Image.open(image).convert("RGB")
 
-        question = example["question"]
-        answers = example.get("answers", [])
-        answer = answers[0] if isinstance(answers, list) and len(answers) > 0 else ""
-
-        # Qwen chat-style prompt
-        messages = [
-            {
-                "role": "user",
-                "content": [
-                    {"type": "image", "image": image},
-                    {"type": "text", "text": question},
-                ],
-            }
-        ]
-
-        chat_text = self.processor.apply_chat_template(
-            messages,
-            tokenize=False,
-            add_generation_prompt=True,
-        )
-
-        # Process text + image jointly
-        inputs = self.processor(
-            text=[chat_text],
-            images=[image],
-            return_tensors="pt",
-            padding=True,
-        )
-
-        # Qwen2.5-VL expects BOTH pixel_values and image_grid_thw
-        if "pixel_values" not in inputs or "image_grid_thw" not in inputs:
-            raise ValueError(f"Processor missing required keys. Got: {inputs.keys()}")
-
-        pixel_values = inputs["pixel_values"].squeeze(0)      # [num_tokens, dim]
-        image_grid_thw = inputs["image_grid_thw"].squeeze(0)  # [3]
-        input_ids = inputs["input_ids"].squeeze(0)
-        attention_mask = inputs["attention_mask"].squeeze(0)
-
-        # Labels for training only
-        if self.split == "train":
-            label_ids = self.processor.tokenizer(
-                answer,
-                padding="max_length",
-                max_length=128,
-                truncation=True,
-                return_tensors="pt",
-            )["input_ids"].squeeze(0)
-        else:
-            label_ids = None
+        question = ex["question"]
+        answers = ex.get("answers", [])
 
         return {
-            "input_ids": input_ids,
-            "attention_mask": attention_mask,
-            "pixel_values": pixel_values,
-            "image_grid_thw": image_grid_thw,
-            "labels": label_ids,
+            "image": image,
             "question": question,
             "answers": answers,
-            "question_id": example.get("question_id", idx),
-            "image_id": example.get("image_id", ""),
+            "question_id": ex.get("question_id", idx),
+            "image_id": ex.get("image_id", ""),
         }
 
 
@@ -147,77 +95,80 @@ class TextVQADataset(Dataset):
 #                       Collate Function
 # ============================================================
 
-def collate_fn(batch: List[Dict]):
+def collate_fn(
+    batch: List[Dict],
+    processor,
+):
     """
-    Collate function for Qwen2.5-VL:
-    - Pads input_ids + attention_mask to max length in batch
-    - Pads pixel_values to max visual token length in batch
-    - Stacks image_grid_thw (shape [3] per image)
+    Collate function that:
+    - Builds Qwen-style chat prompts with images
+    - Uses AutoProcessor to build batched tensors
+    - Does NOT manually pad or reshape vision tensors
     """
 
-    # ---- Text padding ----
-    max_len = max(item["input_ids"].shape[0] for item in batch)
+    images = []
+    texts = []
+    questions = []
+    answers = []
+    question_ids = []
+    image_ids = []
 
-    input_ids_list = []
-    attention_mask_list = []
+    for ex in batch:
+        img = ex["image"]
+        q = ex["question"]
+        ans = ex["answers"]
 
-    for item in batch:
-        ids = item["input_ids"]
-        mask = item["attention_mask"]
-        pad_len = max_len - ids.shape[0]
+        messages = [
+            {
+                "role": "user",
+                "content": [
+                    {"type": "image", "image": img},
+                    {"type": "text", "text": q},
+                ],
+            }
+        ]
 
-        if pad_len > 0:
-            ids = torch.cat([ids, torch.zeros(pad_len, dtype=ids.dtype)])
-            mask = torch.cat([mask, torch.zeros(pad_len, dtype=mask.dtype)])
+        text = processor.apply_chat_template(
+            messages,
+            tokenize=False,
+            add_generation_prompt=True,
+        )
 
-        input_ids_list.append(ids)
-        attention_mask_list.append(mask)
+        images.append(img)
+        texts.append(text)
+        questions.append(q)
+        answers.append(ans)
+        question_ids.append(ex["question_id"])
+        image_ids.append(ex["image_id"])
 
-    input_ids = torch.stack(input_ids_list)          # [B, L]
-    attention_mask = torch.stack(attention_mask_list)
-
-    # ---- Visual tokens padding ----
-    pv_list = [item["pixel_values"] for item in batch]        # each [T_i, D]
-    max_tokens = max(pv.shape[0] for pv in pv_list)
-    hidden_dim = pv_list[0].shape[1]
-
-    padded_pv = []
-    for pv in pv_list:
-        num_tokens = pv.shape[0]
-        if num_tokens < max_tokens:
-            pad_tokens = max_tokens - num_tokens
-            pad = torch.zeros(pad_tokens, hidden_dim, dtype=pv.dtype)
-            pv = torch.cat([pv, pad], dim=0)
-        padded_pv.append(pv)
-
-    pixel_values = torch.stack(padded_pv)  # [B, max_tokens, D]
-
-    # ---- image_grid_thw: [3] per image → [B, 3] ----
-    grid_list = [item["image_grid_thw"] for item in batch]  # each [3]
-    image_grid_thw = torch.stack(grid_list)
-
-    # ---- labels (optional) ----
-    labels = (
-        torch.stack([item["labels"] for item in batch])
-        if batch[0]["labels"] is not None
-        else None
+    # Let the official processor handle everything
+    inputs = processor(
+        text=texts,
+        images=images,
+        return_tensors="pt",
+        padding=True,
     )
+
+    # These keys are exactly what Qwen2_5_VLForConditionalGeneration expects
+    input_ids = inputs["input_ids"]
+    attention_mask = inputs["attention_mask"]
+    pixel_values = inputs["pixel_values"]
+    image_grid_thw = inputs["image_grid_thw"]
 
     return {
         "input_ids": input_ids,
         "attention_mask": attention_mask,
         "pixel_values": pixel_values,
         "image_grid_thw": image_grid_thw,
-        "labels": labels,
-        "questions": [b["question"] for b in batch],
-        "answers": [b["answers"] for b in batch],
-        "question_ids": [b["question_id"] for b in batch],
-        "image_ids": [b["image_id"] for b in batch],
+        "questions": questions,
+        "answers": answers,
+        "question_ids": question_ids,
+        "image_ids": image_ids,
     }
 
 
 # ============================================================
-#               Helper for full train/val/test loaders
+#          Optional helper for train/val/test DataLoaders
 # ============================================================
 
 def create_dataloaders(
@@ -228,6 +179,12 @@ def create_dataloaders(
     num_workers: int = 4,
     subset_size: Optional[int] = None,
 ):
+    """
+    Helper if you later train the model.
+    For now, you only really need the eval path.
+    """
+    from functools import partial
+
     train_ds = load_textvqa_data(data_dir, "train")
     val_ds = load_textvqa_data(data_dir, "validation")
     test_ds = load_textvqa_data(data_dir, "test")
@@ -236,16 +193,19 @@ def create_dataloaders(
         idx = np.random.choice(len(train_ds), subset_size, replace=False)
         train_ds = train_ds.select(idx)
 
-    train_data = TextVQADataset(train_ds, processor, split="train")
-    val_data = TextVQADataset(val_ds, processor, split="validation")
-    test_data = TextVQADataset(test_ds, processor, split="test")
+    train_data = TextVQADataset(train_ds, split="train")
+    val_data = TextVQADataset(val_ds, split="validation")
+    test_data = TextVQADataset(test_ds, split="test")
+
+    train_collate = partial(collate_fn, processor=processor)
+    eval_collate = partial(collate_fn, processor=processor)
 
     train_loader = DataLoader(
         train_data,
         batch_size=train_batch_size,
         shuffle=True,
         num_workers=num_workers,
-        collate_fn=collate_fn,
+        collate_fn=train_collate,
     )
 
     val_loader = DataLoader(
@@ -253,7 +213,7 @@ def create_dataloaders(
         batch_size=eval_batch_size,
         shuffle=False,
         num_workers=num_workers,
-        collate_fn=collate_fn,
+        collate_fn=eval_collate,
     )
 
     test_loader = DataLoader(
@@ -261,7 +221,7 @@ def create_dataloaders(
         batch_size=eval_batch_size,
         shuffle=False,
         num_workers=num_workers,
-        collate_fn=collate_fn,
+        collate_fn=eval_collate,
     )
 
     print(f"Train batches: {len(train_loader)}")
