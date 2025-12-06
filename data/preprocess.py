@@ -178,15 +178,34 @@ def collate_fn(batch: List[Dict]) -> Dict[str, torch.Tensor]:
     attention_mask = torch.stack(attention_mask_list)
     
     # Handle pixel values (may be None for some examples)
-    # For Qwen2.5-VL, pixel values can have variable dimensions - keep as list
+    # For Qwen2.5-VL, pixel values have shape [num_patches, hidden_dim]
+    # Pad to max_patches in batch
     pixel_values = None
     if batch[0]["pixel_values"] is not None:
-        try:
-            # Try stacking if they're the same size
-            pixel_values = torch.stack([item["pixel_values"] for item in batch])
-        except RuntimeError:
-            # If different sizes, keep as list (Qwen2.5-VL can handle this)
-            pixel_values = [item["pixel_values"] for item in batch]
+        pv_list = [item["pixel_values"] for item in batch]
+        
+        # Check if all have same shape
+        shapes = [pv.shape for pv in pv_list]
+        if len(set(shapes)) == 1:
+            # All same shape - can stack directly
+            pixel_values = torch.stack(pv_list)
+        else:
+            # Different shapes - pad to max size
+            max_patches = max(pv.shape[0] for pv in pv_list)
+            hidden_dim = pv_list[0].shape[1]
+            
+            padded_pv_list = []
+            for pv in pv_list:
+                if pv.shape[0] < max_patches:
+                    # Pad with zeros
+                    pad_size = max_patches - pv.shape[0]
+                    padding = torch.zeros(pad_size, hidden_dim, dtype=pv.dtype)
+                    padded_pv = torch.cat([pv, padding], dim=0)
+                else:
+                    padded_pv = pv
+                padded_pv_list.append(padded_pv)
+            
+            pixel_values = torch.stack(padded_pv_list)
     
     # Handle labels
     labels = None
