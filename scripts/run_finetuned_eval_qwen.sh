@@ -9,23 +9,23 @@ LIMIT=""
 
 echo ""
 echo "=== Qwen LoRA: Baseline (no OCR prompt) ==="
-python scripts/run_eval.py --model qwen --lora_path $LORA_PATH $LIMIT
+python scripts/run_eval.py --model qwen --lora_path $LORA_PATH 
 
 echo ""
 echo "=== Qwen LoRA: Descriptive prompt (no OCR) ==="
-python scripts/run_eval.py --model qwen --lora_path $LORA_PATH --prompt_template descriptive $LIMIT
+python scripts/run_eval.py --model qwen --lora_path $LORA_PATH --prompt_template descriptive 
 
 echo ""
 echo "=== Qwen LoRA: Text-focus prompt (no OCR) ==="
-python scripts/run_eval.py --model qwen --lora_path $LORA_PATH --prompt_template text_focus $LIMIT
+python scripts/run_eval.py --model qwen --lora_path $LORA_PATH --prompt_template text_focus 
 
 echo ""
 echo "=== Qwen LoRA: Basic OCR prompt ==="
-python scripts/run_eval.py --model qwen --lora_path $LORA_PATH --prompt_template basic_ocr $LIMIT
+python scripts/run_eval.py --model qwen --lora_path $LORA_PATH --prompt_template basic_ocr 
 
 echo ""
 echo "=== Qwen LoRA: Structured OCR prompt ==="
-python scripts/run_eval.py --model qwen --lora_path $LORA_PATH --prompt_template structured_ocr $LIMIT
+python scripts/run_eval.py --model qwen --lora_path $LORA_PATH --prompt_template structured_ocr 
 
 echo ""
 echo "Fine-tuned Qwen evaluation complete!"
