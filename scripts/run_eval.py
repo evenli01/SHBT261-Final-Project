@@ -265,7 +265,25 @@ def evaluate(args):
     metrics = calculate_metrics(results)
     print("\nEvaluation Results:")
     for k, v in metrics.items():
-        print(f"  {k}: {v:.4f}")
+        # Skip per-category dict here; we'll print it separately
+        if k == "per_category":
+            continue
+        if isinstance(v, (int, float)):
+            print(f"  {k}: {v:.4f}")
+        else:
+            print(f"  {k}: {v}")
+
+    # Pretty-print per-category breakdown
+    per_cat = metrics.get("per_category", {})
+    if per_cat:
+        print("\nPer-Category Metrics:")
+        for cat, stats in per_cat.items():
+            print(f"  [{cat}]")
+            for sk, sv in stats.items():
+                if isinstance(sv, (int, float)):
+                    print(f"    {sk}: {sv:.4f}")
+                else:
+                    print(f"    {sk}: {sv}")
 
     os.makedirs("results", exist_ok=True)
     filename_parts = ["qwen"]
