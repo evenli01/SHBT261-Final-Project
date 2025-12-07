@@ -1,13 +1,8 @@
-"""
-Metrics calculation following classmate's successful approach.
-Primary metric: VQA-style accuracy (min(1, matches/3))
-"""
-
-import torch
+import collections
+import re
 import evaluate
 from sentence_transformers import SentenceTransformer, util
 import numpy as np
-
 
 # Load metrics globally to avoid reloading
 try:
@@ -22,11 +17,9 @@ except Exception as e:
     rouge_metric = None
     semantic_model = None
 
-
 def preprocess_answer(answer):
     """
     Standard VQA text preprocessing.
-    Lowercase, remove extra whitespace.
     """
     answer = str(answer).lower()
     answer = answer.replace('\n', ' ')
@@ -34,65 +27,45 @@ def preprocess_answer(answer):
     answer = answer.strip()
     return answer
 
-
 def compute_vqa_accuracy(ground_truth_list, predicted_answer):
     """
-    Compute VQA-style consensus accuracy (official metric).
-    
-    Formula: acc = min(1, (number of matching human answers) / 3)
-    
-    Args:
-        ground_truth_list: List of ground truth answers
-        predicted_answer: Predicted answer string
-        
-    Returns:
-        Accuracy score between 0 and 1
+    Compute VQA-style consensus accuracy.
+    Official metric: acc = min(1, (number of matching human answers) / 3).
+    Matching is exact string match after normalization; no substring/semantic fuzziness.
     """
     if not ground_truth_list:
-        return 0.0
+        return 0
 
     predicted_answer = preprocess_answer(predicted_answer)
     ground_truth_list = [preprocess_answer(ans) for ans in ground_truth_list]
 
-    # Count exact matches
     match_count = sum(1 for gt in ground_truth_list if gt == predicted_answer)
-    
-    # VQA formula: min(1, matches/3)
     return min(1.0, match_count / 3.0)
-
 
 def compute_semantic_similarity(ground_truth_list, predicted_answer):
     """
     Compute semantic similarity between predicted answer and ground truth answers.
     Returns the maximum similarity score among all ground truth answers.
     """
-    if semantic_model is None or not ground_truth_list:
+    if semantic_model is None:
         return 0.0
+        
+    # Encode
+    pred_emb = semantic_model.encode(predicted_answer, convert_to_tensor=True)
+    gt_embs = semantic_model.encode(ground_truth_list, convert_to_tensor=True)
     
-    try:
-        # Encode
-        pred_emb = semantic_model.encode(predicted_answer, convert_to_tensor=True)
-        gt_embs = semantic_model.encode(ground_truth_list, convert_to_tensor=True)
-        
-        # Compute cosine similarities
-        cosine_scores = util.cos_sim(pred_emb, gt_embs)
-        
-        # Return max similarity
-        return float(torch.max(cosine_scores).item()) if cosine_scores.numel() > 0 else 0.0
-    except Exception as e:
-        print(f"Error computing semantic similarity: {e}")
-        return 0.0
+    # Compute cosine similarities
+    cosine_scores = util.cos_sim(pred_emb, gt_embs)
+    
+    # Return max similarity
+    return float(torch.max(cosine_scores).item()) if cosine_scores.numel() > 0 else 0.0
 
+import torch # Needed for the above check
 
 def calculate_metrics(results):
     """
-    Calculate average metrics over all results.
-    
-    Args:
-        results: List of dicts with 'predicted_answer' and 'ground_truth_answers'
-        
-    Returns:
-        Dict of metric name -> score
+    Calculate average metrics over the results.
+    results: list of dicts with 'predicted_answer' and 'ground_truth_answers'
     """
     if not results:
         return {}
@@ -106,7 +79,7 @@ def calculate_metrics(results):
         pred = item['predicted_answer']
         gts = item['ground_truth_answers']
         
-        # VQA Accuracy
+        # Accuracy
         acc = compute_vqa_accuracy(gts, pred)
         total_acc += acc
         
@@ -123,13 +96,16 @@ def calculate_metrics(results):
         "accuracy": total_acc / len(results)
     }
     
-    # BLEU - use bigrams and smoothing for short VQA answers
+    # BLEU
     if bleu_metric is not None:
+        # BLEU expects references to be list of lists
+        # For VQA, use max_order=2 (bigrams) since answers are short and models generate verbose responses
+        # Enable smoothing to avoid zero scores for partial matches
         try:
             bleu_score = bleu_metric.compute(
                 predictions=predictions, 
                 references=references,
-                max_order=2,  # Bigrams (VQA answers are short)
+                max_order=2,  # Use bigrams instead of 4-grams for VQA
                 smooth=True   # Enable smoothing for short texts
             )
             metrics["bleu"] = bleu_score['bleu']
@@ -140,10 +116,7 @@ def calculate_metrics(results):
     # METEOR
     if meteor_metric is not None:
         try:
-            meteor_score = meteor_metric.compute(
-                predictions=predictions, 
-                references=references
-            )
+            meteor_score = meteor_metric.compute(predictions=predictions, references=references)
             metrics["meteor"] = meteor_score['meteor']
         except Exception as e:
             print(f"Error computing METEOR: {e}")
@@ -152,10 +125,7 @@ def calculate_metrics(results):
     # ROUGE
     if rouge_metric is not None:
         try:
-            rouge_score = rouge_metric.compute(
-                predictions=predictions, 
-                references=references
-            )
+            rouge_score = rouge_metric.compute(predictions=predictions, references=references)
             metrics["rouge1"] = rouge_score['rouge1']
             metrics["rouge2"] = rouge_score['rouge2']
             metrics["rougeL"] = rouge_score['rougeL']
@@ -164,62 +134,11 @@ def calculate_metrics(results):
             metrics["rouge1"] = 0.0
             metrics["rouge2"] = 0.0
             metrics["rougeL"] = 0.0
-    
+            
     # Semantic Similarity
     if semantic_scores:
         metrics["semantic_similarity"] = sum(semantic_scores) / len(semantic_scores)
     else:
         metrics["semantic_similarity"] = 0.0
-    
+        
     return metrics
-
-
-def print_metrics(metrics, title="Evaluation Results"):
-    """
-    Pretty print metrics.
-    
-    Args:
-        metrics: Dict of metric name -> score
-        title: Title for the results
-    """
-    print("\n" + "=" * 70)
-    print(f"  {title}")
-    print("=" * 70)
-    
-    # Print VQA accuracy first (primary metric)
-    if "accuracy" in metrics:
-        print(f"VQA Accuracy (Primary):    {metrics['accuracy']:.4f} ({metrics['accuracy']*100:.2f}%)")
-    
-    # Print other metrics
-    print("\nSecondary Metrics:")
-    for key, value in sorted(metrics.items()):
-        if key != "accuracy":
-            print(f"  {key:25s}: {value:.4f}")
-    
-    print("=" * 70 + "\n")
-
-
-if __name__ == "__main__":
-    # Test metrics calculation
-    print("Testing metrics calculation...")
-    
-    # Example results
-    test_results = [
-        {
-            "predicted_answer": "red",
-            "ground_truth_answers": ["red", "red", "crimson"]
-        },
-        {
-            "predicted_answer": "blue",
-            "ground_truth_answers": ["blue", "azure", "sky blue"]
-        },
-        {
-            "predicted_answer": "green",
-            "ground_truth_answers": ["red", "red", "crimson"]
-        },
-    ]
-    
-    metrics = calculate_metrics(test_results)
-    print_metrics(metrics, "Test Results")
-    
-    print("✓ Metrics test passed!")
