@@ -21,7 +21,6 @@ except Exception as e:
     rouge_metric = None
 
 try:
-    # Match your classmate: use CPU (you can change to cuda later if you want)
     semantic_model = SentenceTransformer("all-MiniLM-L6-v2", device="cpu")
 except Exception as e:
     print(f"Warning: Failed to load semantic model: {e}")
@@ -60,7 +59,7 @@ def compute_vqa_accuracy(ground_truth_list, predicted_answer):
 
 
 # -------------------------------------------------------------------
-# Semantic similarity (per-example, same style as classmate)
+# Semantic similarity
 # -------------------------------------------------------------------
 
 def compute_semantic_similarity(ground_truth_list, predicted_answer):
@@ -88,7 +87,7 @@ def compute_semantic_similarity(ground_truth_list, predicted_answer):
 
 
 # -------------------------------------------------------------------
-# Aggregate metrics (same set as your classmate)
+# Aggregate metrics 
 # -------------------------------------------------------------------
 
 def calculate_metrics(results):
