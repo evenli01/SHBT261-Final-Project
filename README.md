@@ -1,5 +1,7 @@
 # SHBT261-Final-Project
 
+Author: Yiwen Li, Elena Xing, Nouraldeen Ibrahim, Xu Han
+
 A comprehensive study on Vision-Language Models (VLMs) for Text-based Visual Question Answering (TextVQA), featuring BLIP2 and Qwen2.5-VL with LoRA fine-tuning, prompt engineering, and OCR ablation experiments.
 
 ## 📋 Project Overview
@@ -313,11 +315,6 @@ This project is for educational and research purposes as part of SHBT261 coursew
 ## 🤝 Contributing
 
 This is a course project repository. For questions or issues, please contact the repository owner.
-
-## 👥 Authors
-
-- GitHub: [@evenli01](https://github.com/evenli01)
-- Course: SHBT261 Final Project
 
 ## 🙏 Acknowledgments
 
